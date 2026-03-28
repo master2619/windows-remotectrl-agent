@@ -103,7 +103,7 @@ WinOps/
 └── build_agent.bat            # Windows agent compiler
 ```
 
-### Project Structure
+### Upcoming changes
 This is a rapidly evolving tool. Upcoming features include:
 
 * Enhanced process detection utilizing ETW (Event Tracing for Windows) for kernel-level visibility.
