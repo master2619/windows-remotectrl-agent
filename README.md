@@ -104,7 +104,7 @@ WinOps/
 ```
 
 ### Project Structure
-* This is a rapidly evolving tool. Upcoming features include:
+This is a rapidly evolving tool. Upcoming features include:
 
 * Enhanced process detection utilizing ETW (Event Tracing for Windows) for kernel-level visibility.
 
