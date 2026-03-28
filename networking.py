@@ -26,7 +26,13 @@ class AgentCommLink:
                 try:
                     async with websockets.connect(self.server_url) as ws:
                     logger.info("Uplink established! Sending Session Key...")
+
+                    listener_task = asyncio.create_task(self.listen_loop(ws))
+                    telemetry_task = asyncio.create_task(self.telemetry_sync_loop(ws))
+                    tamper_task = asyncio.create_task(self.monitor_tampering(ws))
                     
+                    await asyncio.gather(listener_task, telemetry_task, tamper_task)
+
                     auth_packet = {
                         "type": "auth",
                         "agent_id": self.agent_id,
@@ -91,3 +97,35 @@ class AgentCommLink:
                 
         except json.JSONDecodeError:
             logger.error("Received malformed garbage from server.")
+
+    async def listen_loop(self, ws):
+        """Handles incoming commands from the server"""
+        async for message in ws:
+            await self.handle_incoming_command(message, ws)
+
+    async def telemetry_sync_loop(self, ws):
+        """The dedicated intelligence pipeline"""
+        while True:
+            try:
+                unsynced_logs = self.enforcer.get_unsynced_telemetry()
+                
+                if unsynced_logs:
+                    logger.info(f"📤 Flushing {len(unsynced_logs)} telemetry logs to Mothership...")
+                    
+                    payload = {
+                        "type": "telemetry_batch",
+                        "agent_id": self.agent_id,
+                        "logs": unsynced_logs
+                    }
+                    
+                    await ws.send(json.dumps(payload))
+                    
+                    log_ids = [log['id'] for log in unsynced_logs]
+                    self.enforcer.mark_telemetry_synced(log_ids)
+                    
+            except websockets.exceptions.ConnectionClosed:
+                break 
+            except Exception as e:
+                logger.error(f"Telemetry sync error: {e}")
+                
+            await asyncio.sleep(5) 

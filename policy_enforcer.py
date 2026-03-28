@@ -11,6 +11,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 import json
+import psutil
 
 class PolicyEnforcer:
     """Core engine for dynamic registry monitoring and state persistence"""
@@ -30,6 +31,7 @@ class PolicyEnforcer:
     }
 
     def __init__(self, db_path=None):
+        self.setup_database()
         self.logger = logging.getLogger(__name__)
         
         if db_path is None:
@@ -45,8 +47,8 @@ class PolicyEnforcer:
         self.enforcement_thread = None
         self.stop_event = threading.Event()
 
-    def setup_database(self):
-        """Setup SQLite database for granular telemetry"""
+def setup_database(self):
+        """Upgraded schema: Added source_process and synced flag"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -55,16 +57,72 @@ class PolicyEnforcer:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT NOT NULL,
                     policy_id TEXT NOT NULL,
+                    source_process TEXT NOT NULL,
                     old_value TEXT,
                     new_value TEXT NOT NULL,
-                    action_taken TEXT NOT NULL
+                    action_taken TEXT NOT NULL,
+                    synced INTEGER DEFAULT 0 
                 )
             """)
             conn.commit()
             conn.close()
-            self.logger.info("Telemetry database locked and loaded. 🎯")
         except Exception as e:
             self.logger.error(f"Failed to setup database: {e}")
+
+    def detect_source_process(self):
+        """Scan for the likely culprit that triggered the change"""
+        try:
+            for proc in psutil.process_iter(['name']):
+                name = proc.info['name']
+                if name and name.lower() in ['systemsettings.exe', 'regedit.exe', 'msiexec.exe', 'cmd.exe', 'powershell.exe']:
+                    return name
+            return "Unknown/Background Process"
+        except Exception:
+            return "Unknown"
+
+    def log_telemetry(self, policy_id, old_val, new_val, action):
+        """Record the violation locally"""
+        source_process = self.detect_source_process()
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO policy_telemetry (timestamp, policy_id, source_process, old_value, new_value, action_taken)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (timestamp, policy_id, source_process, str(old_val), str(new_val), action))
+            conn.commit()
+            conn.close()
+            self.logger.warning(f"🚨 Violation Detected: {policy_id} altered by {source_process}. Action: {action}")
+        except Exception as e:
+            self.logger.error(f"Telemetry logging failed: {e}")
+
+    def get_unsynced_telemetry(self):
+        """Fetch all logs that haven't been sent to the Mothership yet"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row 
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM policy_telemetry WHERE synced = 0")
+            rows = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            return rows
+        except Exception as e:
+            self.logger.error(f"Failed to fetch unsynced logs: {e}")
+            return []
+
+    def mark_telemetry_synced(self, log_ids):
+        """Flag logs as successfully transmitted"""
+        if not log_ids: return
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            placeholders = ','.join('?' * len(log_ids))
+            cursor.execute(f"UPDATE policy_telemetry SET synced = 1 WHERE id IN ({placeholders})", log_ids)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            self.logger.error(f"Failed to mark logs synced: {e}")
 
     def load_policies(self, policy_payload):
         """Load a list of policy dictionaries (can be passed from a server later)"""
